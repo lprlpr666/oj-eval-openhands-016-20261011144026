@@ -5,102 +5,117 @@
 #include <algorithm>
 #include <map>
 #include <set>
-#include <sstream>
 
 const std::string DB_FILE = "bptree.db";
 
-// Minimal B+ Tree implementation that meets requirements
+// B+ Tree implementation with explicit tree structure
 class BPTree {
 private:
-    // B+ Tree node structure
-    struct Node {
+    struct BPTreeNode {
         bool is_leaf;
         std::vector<std::string> keys;
-        std::vector<Node*> children;
-        std::vector<std::vector<int>> values;  // Only for leaves
-        Node* next;
+        std::vector<BPTreeNode*> children;
+        std::vector<std::vector<int>> values;  // Only for leaf nodes
+        BPTreeNode* next_leaf;
         
-        Node(bool leaf = false) : is_leaf(leaf), next(nullptr) {}
-        ~Node() {
-            for (auto child : children) delete child;
+        BPTreeNode(bool leaf = false) : is_leaf(leaf), next_leaf(nullptr) {}
+        
+        ~BPTreeNode() {
+            for (auto child : children) {
+                delete child;
+            }
         }
     };
     
-    Node* root;
-    const int MAX_KEYS = 100;  // Large enough for test cases
+    BPTreeNode* root;
+    const int ORDER = 4;  // B+ Tree order
     
-    // Simple file persistence
-    void save_tree() {
-        std::ofstream file(DB_FILE);
+    // File operations
+    void save_to_file() {
+        std::ofstream file(DB_FILE, std::ios::binary);
         if (!file.is_open()) return;
         
-        save_node(file, root);
+        write_node(file, root);
         file.close();
     }
     
-    void save_node(std::ofstream& file, Node* node) {
-        if (!node) return;
+    void write_node(std::ofstream& file, BPTreeNode* node) {
+        if (!node) {
+            bool null = false;
+            file.write(reinterpret_cast<const char*>(&null), sizeof(bool));
+            return;
+        }
         
-        file << node->is_leaf << " " << node->keys.size();
-        for (auto& key : node->keys) {
-            file << " " << key;
+        bool not_null = true;
+        file.write(reinterpret_cast<const char*>(&not_null), sizeof(bool));
+        file.write(reinterpret_cast<const char*>(&node->is_leaf), sizeof(bool));
+        
+        int key_count = node->keys.size();
+        file.write(reinterpret_cast<const char*>(&key_count), sizeof(int));
+        
+        for (const auto& key : node->keys) {
+            int key_len = key.length();
+            file.write(reinterpret_cast<const char*>(&key_len), sizeof(int));
+            file.write(key.c_str(), key_len);
         }
         
         if (node->is_leaf) {
-            for (auto& vals : node->values) {
-                file << " " << vals.size();
-                for (int v : vals) file << " " << v;
+            for (const auto& val_list : node->values) {
+                int val_count = val_list.size();
+                file.write(reinterpret_cast<const char*>(&val_count), sizeof(int));
+                for (int val : val_list) {
+                    file.write(reinterpret_cast<const char*>(&val), sizeof(int));
+                }
             }
-        }
-        
-        file << "\n";
-        
-        if (!node->is_leaf) {
+        } else {
             for (auto child : node->children) {
-                save_node(file, child);
+                write_node(file, child);
             }
         }
     }
     
-    void load_tree() {
-        std::ifstream file(DB_FILE);
+    void load_from_file() {
+        std::ifstream file(DB_FILE, std::ios::binary);
         if (!file.is_open()) return;
         
-        root = load_node(file);
+        root = read_node(file);
         file.close();
     }
     
-    Node* load_node(std::ifstream& file) {
-        std::string line;
-        if (!std::getline(file, line)) return nullptr;
+    BPTreeNode* read_node(std::ifstream& file) {
+        bool exists;
+        file.read(reinterpret_cast<char*>(&exists), sizeof(bool));
+        if (!exists) return nullptr;
         
-        Node* node = new Node();
-        std::istringstream iss(line);
+        BPTreeNode* node = new BPTreeNode();
+        file.read(reinterpret_cast<char*>(&node->is_leaf), sizeof(bool));
         
         int key_count;
-        iss >> node->is_leaf >> key_count;
+        file.read(reinterpret_cast<char*>(&key_count), sizeof(int));
         
         for (int i = 0; i < key_count; i++) {
-            std::string key;
-            iss >> key;
+            int key_len;
+            file.read(reinterpret_cast<char*>(&key_len), sizeof(int));
+            std::string key(key_len, '\0');
+            file.read(&key[0], key_len);
             node->keys.push_back(key);
         }
         
         if (node->is_leaf) {
             for (int i = 0; i < key_count; i++) {
                 int val_count;
-                iss >> val_count;
+                file.read(reinterpret_cast<char*>(&val_count), sizeof(int));
                 std::vector<int> vals;
                 for (int j = 0; j < val_count; j++) {
-                    int v;
-                    iss >> v;
-                    vals.push_back(v);
+                    int val;
+                    file.read(reinterpret_cast<char*>(&val), sizeof(int));
+                    vals.push_back(val);
                 }
                 node->values.push_back(vals);
             }
         } else {
             for (int i = 0; i <= key_count; i++) {
-                Node* child = load_node(file);
+                BPTreeNode* child = read_node(file);
                 node->children.push_back(child);
             }
         }
@@ -108,29 +123,31 @@ private:
         return node;
     }
     
-    Node* find_leaf(const std::string& key) {
+    // B+ Tree operations
+    BPTreeNode* find_leaf(const std::string& key) {
         if (!root) return nullptr;
         
-        Node* curr = root;
-        while (!curr->is_leaf) {
+        BPTreeNode* current = root;
+        while (!current->is_leaf) {
             int i = 0;
-            while (i < (int)curr->keys.size() && key >= curr->keys[i]) i++;
-            curr = curr->children[i];
+            while (i < (int)current->keys.size() && key >= current->keys[i]) {
+                i++;
+            }
+            current = current->children[i];
         }
-        return curr;
+        
+        return current;
     }
     
-    void insert_into_leaf(Node* leaf, const std::string& key, int value) {
-        // Find key position
-        int pos = 0;
-        while (pos < (int)leaf->keys.size() && leaf->keys[pos] < key) pos++;
+    void insert_into_leaf(BPTreeNode* leaf, const std::string& key, int value) {
+        // Find position for key
+        int pos = std::lower_bound(leaf->keys.begin(), leaf->keys.end(), key) - leaf->keys.begin();
         
         if (pos < (int)leaf->keys.size() && leaf->keys[pos] == key) {
-            // Key exists, add value
+            // Key exists, add value if not duplicate
             auto& vals = leaf->values[pos];
             if (std::find(vals.begin(), vals.end(), value) == vals.end()) {
-                vals.push_back(value);
-                std::sort(vals.begin(), vals.end());
+                vals.insert(std::lower_bound(vals.begin(), vals.end(), value), value);
             }
         } else {
             // Insert new key
@@ -139,30 +156,28 @@ private:
         }
     }
     
-    void split_leaf(Node* leaf) {
-        Node* new_leaf = new Node(true);
-        new_leaf->next = leaf->next;
-        leaf->next = new_leaf;
+    void split_leaf(BPTreeNode* leaf) {
+        BPTreeNode* new_leaf = new BPTreeNode(true);
+        new_leaf->next_leaf = leaf->next_leaf;
+        leaf->next_leaf = new_leaf;
         
-        int mid = leaf->keys.size() / 2;
+        int split_pos = leaf->keys.size() / 2;
         
-        // Move half to new leaf
-        for (int i = mid; i < (int)leaf->keys.size(); i++) {
-            new_leaf->keys.push_back(leaf->keys[i]);
-            new_leaf->values.push_back(leaf->values[i]);
-        }
+        // Move keys to new leaf
+        new_leaf->keys.assign(leaf->keys.begin() + split_pos, leaf->keys.end());
+        new_leaf->values.assign(leaf->values.begin() + split_pos, leaf->values.end());
         
-        leaf->keys.resize(mid);
-        leaf->values.resize(mid);
+        leaf->keys.resize(split_pos);
+        leaf->values.resize(split_pos);
         
         // Insert separator into parent
-        insert_into_internal(leaf, new_leaf, new_leaf->keys[0]);
+        insert_into_parent(leaf, new_leaf, new_leaf->keys[0]);
     }
     
-    void insert_into_internal(Node* left, Node* right, const std::string& key) {
+    void insert_into_parent(BPTreeNode* left, BPTreeNode* right, const std::string& key) {
         if (left == root) {
-            // New root
-            Node* new_root = new Node(false);
+            // Create new root
+            BPTreeNode* new_root = new BPTreeNode(false);
             new_root->keys.push_back(key);
             new_root->children.push_back(left);
             new_root->children.push_back(right);
@@ -170,47 +185,49 @@ private:
             return;
         }
         
-        // Find parent and insert
-        Node* parent = find_parent(root, left);
+        // Find parent
+        BPTreeNode* parent = find_parent(root, left);
         if (!parent) return;
         
+        // Find insertion position
         int pos = 0;
-        while (pos < (int)parent->children.size() && parent->children[pos] != left) pos++;
-        pos++;
+        while (pos < (int)parent->children.size() && parent->children[pos] != left) {
+            pos++;
+        }
         
-        parent->keys.insert(parent->keys.begin() + pos - 1, key);
-        parent->children.insert(parent->children.begin() + pos, right);
+        // Insert key and child
+        parent->keys.insert(parent->keys.begin() + pos, key);
+        parent->children.insert(parent->children.begin() + pos + 1, right);
         
-        if (parent->keys.size() > MAX_KEYS) {
+        // Split if necessary
+        if (parent->keys.size() >= ORDER) {
             split_internal(parent);
         }
     }
     
-    void split_internal(Node* node) {
-        Node* new_node = new Node(false);
-        int mid = node->keys.size() / 2;
-        std::string split_key = node->keys[mid];
+    void split_internal(BPTreeNode* node) {
+        BPTreeNode* new_node = new BPTreeNode(false);
+        int split_pos = (ORDER - 1) / 2;
+        std::string split_key = node->keys[split_pos];
         
-        // Move keys and children
-        for (int i = mid + 1; i < (int)node->keys.size(); i++) {
-            new_node->keys.push_back(node->keys[i]);
-        }
-        for (int i = mid + 1; i < (int)node->children.size(); i++) {
-            new_node->children.push_back(node->children[i]);
-        }
+        // Move keys and children to new node
+        new_node->keys.assign(node->keys.begin() + split_pos + 1, node->keys.end());
+        new_node->children.assign(node->children.begin() + split_pos + 1, node->children.end());
         
-        node->keys.resize(mid);
-        node->children.resize(mid + 1);
+        // Resize original node
+        node->keys.resize(split_pos);
+        node->children.resize(split_pos + 1);
         
-        insert_into_internal(node, new_node, split_key);
+        // Insert split key into parent
+        insert_into_parent(node, new_node, split_key);
     }
     
-    Node* find_parent(Node* curr, Node* child) {
-        if (curr->is_leaf) return nullptr;
+    BPTreeNode* find_parent(BPTreeNode* current, BPTreeNode* child) {
+        if (current->is_leaf) return nullptr;
         
-        for (auto c : curr->children) {
-            if (c == child) return curr;
-            Node* parent = find_parent(c, child);
+        for (auto c : current->children) {
+            if (c == child) return current;
+            BPTreeNode* parent = find_parent(c, child);
             if (parent) return parent;
         }
         return nullptr;
@@ -218,33 +235,34 @@ private:
     
 public:
     BPTree() : root(nullptr) {
-        load_tree();
+        load_from_file();
     }
     
     ~BPTree() {
-        save_tree();
+        save_to_file();
         delete root;
     }
     
     void insert(const std::string& key, int value) {
         if (!root) {
-            root = new Node(true);
+            root = new BPTreeNode(true);
         }
         
-        Node* leaf = find_leaf(key);
+        BPTreeNode* leaf = find_leaf(key);
         insert_into_leaf(leaf, key, value);
         
-        if (leaf->keys.size() > MAX_KEYS) {
+        if (leaf->keys.size() >= ORDER) {
             split_leaf(leaf);
         }
         
-        save_tree();
+        save_to_file();
     }
     
     void remove(const std::string& key, int value) {
         if (!root) return;
         
-        Node* leaf = find_leaf(key);
+        BPTreeNode* leaf = find_leaf(key);
+        
         for (int i = 0; i < (int)leaf->keys.size(); i++) {
             if (leaf->keys[i] == key) {
                 auto& vals = leaf->values[i];
@@ -260,14 +278,15 @@ public:
             }
         }
         
-        save_tree();
+        save_to_file();
     }
     
     std::vector<int> find(const std::string& key) {
         std::vector<int> result;
         if (!root) return result;
         
-        Node* leaf = find_leaf(key);
+        BPTreeNode* leaf = find_leaf(key);
+        
         for (int i = 0; i < (int)leaf->keys.size(); i++) {
             if (leaf->keys[i] == key) {
                 result = leaf->values[i];
